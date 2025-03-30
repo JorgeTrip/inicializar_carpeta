@@ -64,10 +64,14 @@ class MainWindow(QMainWindow):
     Proporciona una interfaz para seleccionar carpetas y vincularlas con GitHub.
     """
 
-    def __init__(self):
+    def __init__(self, gh_cli_installed=False, gh_user_info=None):
         """
         Constructor de la ventana principal.
         Inicializa la interfaz gráfica.
+        
+        Args:
+            gh_cli_installed (bool): Indica si GitHub CLI está instalado.
+            gh_user_info (Optional[Dict[str, Any]]): Información del usuario de GitHub.
         """
         super().__init__()
         
@@ -75,19 +79,15 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Inicializador de Repositorios GitHub")
         self.setMinimumSize(800, 600)
         
+        # Almacenar información de GitHub CLI
+        self.gh_cli_installed = gh_cli_installed
+        self.gh_user_info = gh_user_info
+        
         # Crear el controlador de Git
         self.git_controller = GitController()
         
         # Inicializar la interfaz
         self._init_ui()
-        
-        # Verificar si Git está instalado
-        if not is_git_installed():
-            QMessageBox.warning(
-                self,
-                "Git no encontrado",
-                "No se ha detectado Git en el sistema. Por favor, instálalo para poder usar esta aplicación."
-            )
     
     def _init_ui(self):
         """
@@ -175,14 +175,32 @@ class MainWindow(QMainWindow):
         url_group = QGroupBox("URL del Repositorio")
         url_layout = QVBoxLayout(url_group)
         
+        # Mostrar información de GitHub CLI si está disponible
+        if self.gh_cli_installed and self.gh_user_info and self.gh_user_info.get('username'):
+            gh_info_layout = QHBoxLayout()
+            
+            gh_status_label = QLabel(f"✅ GitHub CLI: Autenticado como {self.gh_user_info.get('username')}")
+            gh_status_label.setStyleSheet("color: green;")
+            gh_info_layout.addWidget(gh_status_label)
+            
+            url_layout.addLayout(gh_info_layout)
+        elif self.gh_cli_installed:
+            gh_status_label = QLabel("⚠️ GitHub CLI: Instalado pero no autenticado")
+            gh_status_label.setStyleSheet("color: orange;")
+            url_layout.addWidget(gh_status_label)
+        else:
+            gh_status_label = QLabel("❌ GitHub CLI: No instalado")
+            gh_status_label.setStyleSheet("color: red;")
+            url_layout.addWidget(gh_status_label)
+        
         url_description = QLabel(
             "Introduce la URL del repositorio de GitHub:"
         )
         url_description.setWordWrap(True)
         url_layout.addWidget(url_description)
         
-        # Checkbox para usar el nombre de la carpeta como nombre del repositorio
-        self.use_folder_name_checkbox = QCheckBox("Mi carpeta se llama igual que el repositorio")
+        # Checkbox para permitir la edición manual de la URL del repositorio
+        self.use_folder_name_checkbox = QCheckBox("Modificar manualmente (si el link es correcto, no cambiar nada)")
         self.use_folder_name_checkbox.setChecked(False)
         self.use_folder_name_checkbox.stateChanged.connect(self._update_repo_url)
         url_layout.addWidget(self.use_folder_name_checkbox)
@@ -253,9 +271,9 @@ class MainWindow(QMainWindow):
             success, message = self.git_controller.set_folder_path(folder_path)
             self._log_message(message)
             
-            # Actualizar la URL del repositorio si está marcada la opción
-            if self.use_folder_name_checkbox.isChecked():
-                self._update_repo_url()
+            # Actualizar la URL del repositorio siempre que se seleccione una carpeta
+            # independientemente del estado del checkbox
+            self._update_repo_url()
     
     def _start_process(self):
         """
@@ -271,16 +289,6 @@ class MainWindow(QMainWindow):
             )
             return
         
-        # Validar que se haya introducido una URL
-        repo_url = self.repo_url_input.text()
-        if not repo_url:
-            QMessageBox.warning(
-                self,
-                "URL no especificada",
-                "Por favor, introduce la URL del repositorio de GitHub."
-            )
-            return
-        
         # Obtener el mensaje de commit
         commit_message = self.commit_message_input.text()
         if not commit_message:
@@ -288,10 +296,48 @@ class MainWindow(QMainWindow):
         
         # Determinar el tipo de flujo de trabajo
         if self.new_repo_radio.isChecked():
-            # Mostrar instrucciones para crear un nuevo repositorio
-            self._show_new_repo_instructions()
+            # Verificar si GitHub CLI está instalado y autenticado
+            if not self.gh_cli_installed:
+                QMessageBox.warning(
+                    self,
+                    "GitHub CLI no instalado",
+                    "Para crear automáticamente un repositorio, necesitas instalar GitHub CLI. "
+                    "Puedes descargarlo desde https://cli.github.com/"
+                )
+                return
+            
+            if not self.gh_user_info or not self.gh_user_info.get('username'):
+                QMessageBox.warning(
+                    self,
+                    "No autenticado en GitHub",
+                    "Para crear automáticamente un repositorio, necesitas autenticarte en GitHub CLI. "
+                    "Reinicia la aplicación y sigue las instrucciones de autenticación."
+                )
+                return
+            
+            # Crear el repositorio automáticamente con GitHub CLI
+            repo_name = os.path.basename(folder_path)
+            repo_url = self._create_github_repository(repo_name)
+            
+            if not repo_url:
+                return  # Si hubo un error al crear el repositorio, detener el proceso
+            
+            # Actualizar el campo de URL con la URL del repositorio creado
+            self.repo_url_input.setText(repo_url)
+            
+            # Obtener el flujo de trabajo para un nuevo repositorio
             workflow = self.git_controller.get_new_repository_workflow(repo_url, commit_message)
         else:
+            # Validar que se haya introducido una URL para repositorios existentes
+            repo_url = self.repo_url_input.text()
+            if not repo_url:
+                QMessageBox.warning(
+                    self,
+                    "URL no especificada",
+                    "Por favor, introduce la URL del repositorio de GitHub."
+                )
+                return
+            
             # Mostrar instrucciones para vincular con un repositorio existente
             self._show_existing_repo_instructions()
             workflow = self.git_controller.get_existing_repository_workflow(repo_url)
@@ -320,31 +366,83 @@ class MainWindow(QMainWindow):
             self.worker_thread.error_signal.connect(self._process_error)
             self.worker_thread.start()
     
-    def _show_new_repo_instructions(self):
+    def _create_github_repository(self, repo_name: str) -> str:
         """
-        Muestra instrucciones para crear un nuevo repositorio en GitHub.
-        """
-        instructions = (
-            "<h3>Instrucciones para crear un nuevo repositorio en GitHub:</h3>"
-            "<ol>"
-            "<li>Inicia sesión en tu cuenta de GitHub.</li>"
-            "<li>Haz clic en el botón '+' en la esquina superior derecha y selecciona 'New repository'.</li>"
-            "<li>Introduce un nombre para tu repositorio.</li>"
-            "<li>Opcionalmente, añade una descripción.</li>"
-            "<li>Selecciona si el repositorio será público o privado.</li>"
-            "<li>NO inicialices el repositorio con README, .gitignore o licencia.</li>"
-            "<li>Haz clic en 'Create repository'.</li>"
-            "<li>Copia la URL del repositorio (termina en .git) y pégala en el campo 'URL del Repositorio'.</li>"
-            "</ol>"
-            "<p>Una vez creado el repositorio, haz clic en 'Iniciar Proceso' para continuar.</p>"
-        )
+        Crea un nuevo repositorio en GitHub usando GitHub CLI.
         
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("Crear Nuevo Repositorio")
-        msg_box.setTextFormat(Qt.RichText)
-        msg_box.setText(instructions)
-        msg_box.setStandardButtons(QMessageBox.Ok)
-        msg_box.exec_()
+        Args:
+            repo_name (str): Nombre del repositorio a crear.
+            
+        Returns:
+            str: URL del repositorio creado o cadena vacía si hubo un error.
+        """
+        from src.utils.github_cli import get_gh_cli_path
+        import subprocess
+        import json
+        
+        # Obtener la ruta del ejecutable de GitHub CLI
+        gh_path = get_gh_cli_path()
+        if not gh_path:
+            self._log_message("❌ Error: No se pudo encontrar GitHub CLI.")
+            return ""
+        
+        # Limpiar el nombre del repositorio (eliminar caracteres no válidos)
+        import re
+        clean_repo_name = re.sub(r'[^\w.-]', '-', repo_name)
+        
+        # Mostrar mensaje en el log
+        self._log_message(f"🔄 Creando repositorio '{clean_repo_name}' en GitHub...")
+        
+        try:
+            # Crear el repositorio con GitHub CLI
+            # Usamos --private por defecto, pero se podría añadir una opción en la interfaz
+            result = subprocess.run(
+                [gh_path, 'repo', 'create', clean_repo_name, '--private', '--source=.', '--json=url'],
+                cwd=self.folder_path_input.text(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True
+            )
+            
+            # Verificar si el comando se ejecutó correctamente
+            if result.returncode == 0:
+                try:
+                    # Parsear la salida JSON para obtener la URL
+                    repo_info = json.loads(result.stdout)
+                    repo_url = repo_info.get('url', '')
+                    
+                    # Asegurar que la URL termina en .git
+                    if repo_url and not repo_url.endswith('.git'):
+                        repo_url = repo_url + '.git'
+                    
+                    self._log_message(f"✅ Repositorio creado correctamente: {repo_url}")
+                    return repo_url
+                except json.JSONDecodeError:
+                    self._log_message(f"⚠️ No se pudo obtener la URL del repositorio. Salida: {result.stdout}")
+                    return ""
+            else:
+                # Mostrar el error en el log
+                self._log_message(f"❌ Error al crear el repositorio: {result.stderr}")
+                
+                # Mostrar un mensaje de error al usuario
+                QMessageBox.critical(
+                    self,
+                    "Error al crear el repositorio",
+                    f"No se pudo crear el repositorio en GitHub. Error: {result.stderr}"
+                )
+                return ""
+        except Exception as e:
+            # Capturar cualquier excepción
+            error_msg = str(e)
+            self._log_message(f"❌ Error inesperado al crear el repositorio: {error_msg}")
+            
+            # Mostrar un mensaje de error al usuario
+            QMessageBox.critical(
+                self,
+                "Error al crear el repositorio",
+                f"Se produjo un error inesperado al crear el repositorio: {error_msg}"
+            )
+            return ""
     
     def _show_existing_repo_instructions(self):
         """
@@ -456,25 +554,48 @@ class MainWindow(QMainWindow):
     def _update_repo_url(self):
         """
         Actualiza la URL del repositorio basándose en el nombre de la carpeta seleccionada.
+        Utiliza la información del usuario de GitHub CLI si está disponible.
+        Controla la edición del campo de URL según el estado del checkbox.
         """
         from src.utils.common import get_git_username, build_github_url
+        from src.utils.github_cli import extract_repo_name_from_path, build_github_repo_url
         
         folder_path = self.folder_path_input.text()
         if not folder_path:
             return
+        
+        # Determinar si el campo de URL debe ser editable
+        is_manual_edit = self.use_folder_name_checkbox.isChecked()
+        self.repo_url_input.setReadOnly(not is_manual_edit)
+        
+        # Establecer el estilo del campo según si es editable o no
+        if is_manual_edit:
+            self.repo_url_input.setStyleSheet("")
+        else:
+            self.repo_url_input.setStyleSheet("background-color: #F0F0F0;")
             
-        if self.use_folder_name_checkbox.isChecked():
-            # Obtener el nombre de usuario de Git
-            username = get_git_username()
+            # Generar la URL automáticamente cuando no es editable
+            username = ""
+            
+            # Usar el nombre de usuario de GitHub CLI si está disponible
+            if self.gh_cli_installed and self.gh_user_info and self.gh_user_info.get('username'):
+                username = self.gh_user_info.get('username')
+            else:
+                # Si no hay información de GitHub CLI, usar el nombre de usuario de Git
+                username = get_git_username()
+            
+            # Extraer el nombre del repositorio de la ruta de la carpeta
+            repo_name = extract_repo_name_from_path(folder_path)
             
             # Construir la URL del repositorio
-            repo_url = build_github_url(folder_path, username)
+            if username:
+                repo_url = build_github_repo_url(username, repo_name)
+            else:
+                # Si no se puede obtener el nombre de usuario, usar la función existente
+                repo_url = build_github_url(folder_path)
             
             # Actualizar el campo de URL
             self.repo_url_input.setText(repo_url)
-        else:
-            # Si se desmarca la casilla, no hacer nada con la URL actual
-            pass
     
     def _log_message(self, message: str):
         """

@@ -1,3 +1,6 @@
 # Dependencias para el proyecto Inicializador de Repositorios GitHub
 PyQt5==5.15.9
 gitpython==3.1.40
+
+# Nota: Esta aplicación utiliza GitHub CLI (gh) para funcionalidades adicionales
+# Instala GitHub CLI desde: https://cli.github.com/
