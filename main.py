@@ -11,6 +11,7 @@ import subprocess
 from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton, QDialog, QVBoxLayout, QLabel
 from PyQt5.QtCore import Qt, QEventLoop
 from src.views.main_window import MainWindow
+from src.views.loading_screen import LoadingScreen
 from src.utils.common import is_git_installed
 from src.utils.github_cli import is_gh_cli_installed, is_gh_authenticated, get_gh_user_info, get_gh_cli_path
 
@@ -26,6 +27,8 @@ class AuthDialog(QDialog):
         self.setMinimumWidth(500)
         # Permitir que el diálogo permanezca visible mientras se trabaja con otras ventanas
         self.setWindowFlags((self.windowFlags() & ~Qt.WindowContextHelpButtonHint) | Qt.WindowStaysOnTopHint)
+        # Asegurar que la ventana permanezca siempre visible, incluso cuando se abren otras ventanas
+        self.setWindowModality(Qt.NonModal)
         
         layout = QVBoxLayout()
         
@@ -115,7 +118,7 @@ class AuthDialog(QDialog):
                     if os.name == 'nt':
                         # En Windows, usamos start cmd.exe para abrir una nueva ventana de terminal
                         # y ejecutar el comando de forma interactiva
-                        cmd = f'start cmd.exe /k "\"{gh_path}\" auth login --web"'
+                        cmd = f'start cmd.exe /k \"{gh_path}\" auth login --web'
                         subprocess.Popen(cmd, shell=True)
                     else:
                         # En otros sistemas operativos, abrimos una terminal
@@ -164,6 +167,8 @@ def authenticate_github_cli():
     auth_dialog = AuthDialog()
     auth_dialog.setModal(False)  # Hacemos que el diálogo no sea modal
     auth_dialog.show()  # Mostramos el diálogo sin bloquear
+    auth_dialog.activateWindow()  # Aseguramos que tenga el foco
+    auth_dialog.raise_()  # Lo colocamos encima de otras ventanas
     
     # Creamos un bucle de eventos personalizado para esperar a que el diálogo se cierre
     from PyQt5.QtCore import QEventLoop
@@ -191,58 +196,52 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Inicializador de Repositorios GitHub")
     
-    # Verificar si Git está instalado
-    if not is_git_installed():
-        QMessageBox.critical(
-            None,
-            "Git no encontrado",
-            "No se ha detectado Git en el sistema. Por favor, instálalo para poder usar esta aplicación."
-        )
-        return
+    # Definir las verificaciones iniciales
+    checks = [
+        {
+            'id': 'git_installed',
+            'description': 'Verificando instalación de Git',
+            'function': is_git_installed,
+            'critical': True,
+            'error_message': "No se ha detectado Git en el sistema. Por favor, instálalo para poder usar esta aplicación."
+        },
+        {
+            'id': 'gh_cli_installed',
+            'description': 'Verificando instalación de GitHub CLI',
+            'function': is_gh_cli_installed,
+            'critical': True,
+            'error_message': "No se ha detectado GitHub CLI en el sistema. Esta aplicación requiere GitHub CLI para funcionar correctamente. "
+                            "Por favor, instálalo desde https://cli.github.com/ e inténtalo de nuevo."
+        },
+        {
+            'id': 'gh_authenticated',
+            'description': 'Verificando autenticación en GitHub',
+            'function': is_gh_authenticated,
+            'critical': True,
+            'recovery_function': authenticate_github_cli,
+            'error_message': "No se ha podido autenticar en GitHub. Esta aplicación requiere autenticación en GitHub para funcionar correctamente."
+        }
+    ]
     
-    # Verificar si GitHub CLI está instalado
-    if not is_gh_cli_installed():
-        QMessageBox.critical(
-            None,
-            "GitHub CLI no encontrado",
-            "No se ha detectado GitHub CLI en el sistema. Esta aplicación requiere GitHub CLI para funcionar correctamente. "
-            "Por favor, instálalo desde https://cli.github.com/ e inténtalo de nuevo."
-        )
-        return
+    # Mostrar la pantalla de carga
+    loading_screen = LoadingScreen(checks)
+    result = loading_screen.exec_()
     
-    # Verificar si el usuario está autenticado en GitHub CLI
-    if not is_gh_authenticated():
-        # Mostrar mensaje y ofrecer autenticación
-        result = QMessageBox.question(
-            None,
-            "GitHub CLI no autenticado",
-            "Se ha detectado GitHub CLI, pero no estás autenticado. Esta aplicación requiere autenticación en GitHub. "
-            "¿Deseas iniciar el proceso de autenticación ahora?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
-        )
-        
-        if result == QMessageBox.Yes:
-            # Iniciar proceso de autenticación
-            if not authenticate_github_cli():
-                # Si el usuario cancela la autenticación, salir
-                QMessageBox.warning(
-                    None,
-                    "Autenticación cancelada",
-                    "Has cancelado el proceso de autenticación. La aplicación no puede continuar sin autenticación en GitHub."
-                )
-                return
-        else:
-            # Si el usuario no quiere autenticarse, salir
-            QMessageBox.warning(
-                None,
-                "Autenticación requerida",
-                "La aplicación no puede continuar sin autenticación en GitHub."
-            )
-            return
+    # Si el usuario cancela o alguna verificación falla, salir
+    if result != QDialog.Accepted:
+        return
     
     # Obtener información del usuario autenticado
     gh_user_info = get_gh_user_info()
+    
+    # Verificar si se obtuvo la información del usuario
+    if not gh_user_info:
+        QMessageBox.critical(
+            None,
+            "Error al obtener información de usuario",
+            "No se ha podido obtener la información del usuario de GitHub. Por favor, intenta nuevamente."
+        )
+        return
     
     # Crear y mostrar la ventana principal
     window = MainWindow(True, gh_user_info)
