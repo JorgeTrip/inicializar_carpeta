@@ -232,6 +232,12 @@ class MainWindow(QMainWindow):
         self.start_button.clicked.connect(self._start_process)
         main_layout.addWidget(self.start_button)
         
+        # Botón de salir
+        self.exit_button = QPushButton("Salir")
+        self.exit_button.setMinimumHeight(40)
+        self.exit_button.clicked.connect(self._exit_application)
+        main_layout.addWidget(self.exit_button)
+        
         # Barra de progreso
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
@@ -677,6 +683,7 @@ class MainWindow(QMainWindow):
         self.existing_repo_radio.setEnabled(enabled)
         self.use_folder_name_checkbox.setEnabled(enabled)
         self.start_button.setEnabled(enabled)
+        self.exit_button.setEnabled(enabled)
         
     def _update_repo_url(self):
         """
@@ -736,3 +743,9 @@ class MainWindow(QMainWindow):
         self.log_text.verticalScrollBar().setValue(
             self.log_text.verticalScrollBar().maximum()
         )
+        
+    def _exit_application(self):
+        """
+        Cierra la aplicación.
+        """
+        QApplication.quit()
