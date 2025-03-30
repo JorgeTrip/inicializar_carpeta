@@ -316,6 +316,7 @@ class MainWindow(QMainWindow):
                 return
             
             # Crear el repositorio automáticamente con GitHub CLI
+            # Nota: El método _create_github_repository ahora inicializa el repositorio Git si es necesario
             repo_name = os.path.basename(folder_path)
             repo_url = self._create_github_repository(repo_name)
             
@@ -326,6 +327,8 @@ class MainWindow(QMainWindow):
             self.repo_url_input.setText(repo_url)
             
             # Obtener el flujo de trabajo para un nuevo repositorio
+            # Como ya hemos inicializado el repositorio Git en _create_github_repository,
+            # podemos ajustar el flujo de trabajo para evitar duplicar la inicialización
             workflow = self.git_controller.get_new_repository_workflow(repo_url, commit_message)
         else:
             # Validar que se haya introducido una URL para repositorios existentes
@@ -342,16 +345,28 @@ class MainWindow(QMainWindow):
             self._show_existing_repo_instructions()
             workflow = self.git_controller.get_existing_repository_workflow(repo_url)
         
-        # Preguntar al usuario si desea continuar
-        reply = QMessageBox.question(
-            self,
-            "Confirmar operación",
-            "¿Deseas continuar con el proceso de vinculación?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes
-        )
+        # Determinar si debemos mostrar confirmación o proceder directamente
+        # Si estamos creando un nuevo repositorio y ya se ha creado exitosamente, no necesitamos confirmación
+        if self.new_repo_radio.isChecked() and repo_url:
+            # Mostrar mensaje de éxito en lugar de confirmación
+            QMessageBox.information(
+                self,
+                "Repositorio Creado",
+                f"El repositorio '{os.path.basename(folder_path)}' ha sido creado exitosamente en GitHub.\n\nSe procederá a completar el proceso de vinculación."
+            )
+            proceed = True
+        else:
+            # Para vinculación manual, mostrar confirmación
+            reply = QMessageBox.question(
+                self,
+                "Confirmar operación",
+                "¿Deseas continuar con el proceso de vinculación?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            proceed = (reply == QMessageBox.Yes)
         
-        if reply == QMessageBox.Yes:
+        if proceed:
             # Limpiar el log
             self.log_text.clear()
             self.progress_bar.setValue(0)
@@ -369,6 +384,7 @@ class MainWindow(QMainWindow):
     def _create_github_repository(self, repo_name: str) -> str:
         """
         Crea un nuevo repositorio en GitHub usando GitHub CLI.
+        Primero inicializa el repositorio Git local si es necesario.
         
         Args:
             repo_name (str): Nombre del repositorio a crear.
@@ -390,6 +406,37 @@ class MainWindow(QMainWindow):
         import re
         clean_repo_name = re.sub(r'[^\w.-]', '-', repo_name)
         
+        # Verificar si la carpeta ya es un repositorio Git
+        folder_path = self.folder_path_input.text()
+        if not os.path.exists(os.path.join(folder_path, '.git')):
+            # Inicializar el repositorio Git local primero
+            self._log_message("🔄 Inicializando repositorio Git local...")
+            try:
+                init_result = subprocess.run(
+                    ['git', 'init'],
+                    cwd=folder_path,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True
+                )
+                if init_result.returncode != 0:
+                    self._log_message(f"❌ Error al inicializar el repositorio Git: {init_result.stderr}")
+                    QMessageBox.critical(
+                        self,
+                        "Error al inicializar el repositorio",
+                        f"No se pudo inicializar el repositorio Git. Error: {init_result.stderr}"
+                    )
+                    return ""
+                self._log_message("✅ Repositorio Git local inicializado correctamente.")
+            except Exception as e:
+                self._log_message(f"❌ Error inesperado al inicializar el repositorio Git: {str(e)}")
+                QMessageBox.critical(
+                    self,
+                    "Error al inicializar el repositorio",
+                    f"Se produjo un error inesperado al inicializar el repositorio Git: {str(e)}"
+                )
+                return ""
+        
         # Mostrar mensaje en el log
         self._log_message(f"🔄 Creando repositorio '{clean_repo_name}' en GitHub...")
         
@@ -397,8 +444,8 @@ class MainWindow(QMainWindow):
             # Crear el repositorio con GitHub CLI
             # Usamos --private por defecto, pero se podría añadir una opción en la interfaz
             result = subprocess.run(
-                [gh_path, 'repo', 'create', clean_repo_name, '--private', '--source=.', '--json=url'],
-                cwd=self.folder_path_input.text(),
+                [gh_path, 'repo', 'create', clean_repo_name, '--private', '--source=.'],
+                cwd=folder_path,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True
@@ -406,18 +453,36 @@ class MainWindow(QMainWindow):
             
             # Verificar si el comando se ejecutó correctamente
             if result.returncode == 0:
-                try:
-                    # Parsear la salida JSON para obtener la URL
-                    repo_info = json.loads(result.stdout)
-                    repo_url = repo_info.get('url', '')
-                    
-                    # Asegurar que la URL termina en .git
-                    if repo_url and not repo_url.endswith('.git'):
-                        repo_url = repo_url + '.git'
-                    
+                # Extraer la URL del repositorio de la salida de texto
+                # La salida típica contiene algo como "Created repository username/repo-name on GitHub"
+                # y posiblemente una URL en otra línea
+                output_lines = result.stdout.strip().split('\n')
+                repo_url = ""
+                
+                # Buscar una URL en la salida
+                for line in output_lines:
+                    # Buscar URLs de GitHub en la salida
+                    if "github.com" in line:
+                        # Extraer la URL usando expresiones regulares
+                        import re
+                        urls = re.findall(r'https?://github\.com/[\w.-]+/[\w.-]+', line)
+                        if urls:
+                            repo_url = urls[0]
+                            break
+                
+                # Si no se encontró una URL, intentar construirla a partir del nombre del repositorio
+                if not repo_url and self.gh_user_info and self.gh_user_info.get('username'):
+                    username = self.gh_user_info.get('username')
+                    repo_url = f"https://github.com/{username}/{clean_repo_name}"
+                
+                # Asegurar que la URL termina en .git
+                if repo_url and not repo_url.endswith('.git'):
+                    repo_url = repo_url + '.git'
+                
+                if repo_url:
                     self._log_message(f"✅ Repositorio creado correctamente: {repo_url}")
                     return repo_url
-                except json.JSONDecodeError:
+                else:
                     self._log_message(f"⚠️ No se pudo obtener la URL del repositorio. Salida: {result.stdout}")
                     return ""
             else:
@@ -452,12 +517,15 @@ class MainWindow(QMainWindow):
             "<h3>Instrucciones para vincular con un repositorio existente:</h3>"
             "<ol>"
             "<li>Asegúrate de que el repositorio ya existe en GitHub.</li>"
-            "<li>Copia la URL del repositorio (termina en .git) desde la página del repositorio.</li>"
-            "<li>Pega la URL en el campo 'URL del Repositorio'.</li>"
+            "<li>Verifica que la URL del repositorio en el campo sea correcta (debe terminar en .git).</li>"
+            "<li>Si necesitas modificar la URL, activa la casilla 'Modificar manualmente'.</li>"
             "</ol>"
             "<p>Ten en cuenta que si el repositorio no está vacío, es posible que necesites resolver conflictos manualmente.</p>"
-            "<p>Haz clic en 'Iniciar Proceso' para continuar.</p>"
+            "<p>Al hacer clic en 'Iniciar Proceso', se vinculará la carpeta local con el repositorio existente.</p>"
         )
+        
+        # Registrar la acción en el log
+        self._log_message("ℹ️ Vinculando con repositorio existente: " + self.repo_url_input.text())
         
         msg_box = QMessageBox(self)
         msg_box.setWindowTitle("Vincular con Repositorio Existente")
@@ -493,15 +561,25 @@ class MainWindow(QMainWindow):
         # Mostrar resultados en el log
         self._log_message("\n--- Resultados del proceso ---")
         success_count = 0
+        error_details = []
+        
         for result in results:
             status = "✅ Éxito" if result['success'] else "❌ Error"
             self._log_message(f"{status}: {result['name']} - {result['message']}")
+            
             if result['success']:
                 success_count += 1
+            else:
+                error_details.append(result)
         
         # Mostrar mensaje final
         if success_count == len(results):
             self._log_message("\n✅ Proceso completado con éxito.")
+            self._log_message("\n📋 Resumen:")
+            self._log_message("  - Repositorio inicializado correctamente")
+            self._log_message(f"  - URL del repositorio: {self.repo_url_input.text()}")
+            self._log_message("  - Archivos añadidos y sincronizados con GitHub")
+            
             QMessageBox.information(
                 self,
                 "Proceso Completado",
@@ -509,10 +587,29 @@ class MainWindow(QMainWindow):
             )
         else:
             self._log_message(f"\n⚠️ Proceso completado con {len(results) - success_count} errores.")
+            
+            # Mostrar detalles de los errores y posibles soluciones
+            self._log_message("\n🔍 Detalles de los errores:")
+            for i, error in enumerate(error_details, 1):
+                self._log_message(f"  {i}. Error en: {error['name']}")
+                self._log_message(f"     Mensaje: {error['message']}")
+                
+                # Sugerir soluciones según el tipo de error
+                if "remote" in error['name'].lower():
+                    self._log_message("     Posible solución: Verifica que la URL del repositorio sea correcta y que tengas permisos de acceso.")
+                elif "push" in error['name'].lower():
+                    self._log_message("     Posible solución: Puede haber conflictos entre los archivos locales y remotos. Considera hacer un pull antes de push.")
+                elif "commit" in error['name'].lower():
+                    self._log_message("     Posible solución: Asegúrate de que hay cambios para hacer commit y que tu usuario de Git está configurado.")
+                else:
+                    self._log_message("     Posible solución: Revisa los mensajes de error y asegúrate de que Git está correctamente configurado.")
+            
+            self._log_message("\n💡 Recomendación: Si los errores persisten, considera ejecutar los comandos Git manualmente para obtener más detalles.")
+            
             QMessageBox.warning(
                 self,
                 "Proceso Completado con Errores",
-                f"El proceso ha finalizado con {len(results) - success_count} errores. Revisa el registro para más detalles."
+                f"El proceso ha finalizado con {len(results) - success_count} errores. Revisa el registro para más detalles y recomendaciones."
             )
     
     @pyqtSlot(str)
@@ -526,14 +623,44 @@ class MainWindow(QMainWindow):
         # Habilitar controles
         self._set_controls_enabled(True)
         
-        # Mostrar error en el log
-        self._log_message(f"\n❌ Error: {error_message}")
+        # Mostrar error en el log con formato destacado
+        self._log_message(f"\n❌ ERROR CRÍTICO: {error_message}")
+        
+        # Analizar el error y proporcionar sugerencias
+        self._log_message("\n🔍 Análisis del error:")
+        
+        if "permission" in error_message.lower() or "acceso" in error_message.lower():
+            self._log_message("  - Parece ser un problema de permisos.")
+            self._log_message("  - Sugerencia: Verifica que tienes permisos de escritura en la carpeta seleccionada.")
+            self._log_message("  - Sugerencia: Asegúrate de que tienes permisos en el repositorio de GitHub.")
+        
+        elif "network" in error_message.lower() or "red" in error_message.lower() or "conexión" in error_message.lower():
+            self._log_message("  - Parece ser un problema de conexión a internet.")
+            self._log_message("  - Sugerencia: Verifica tu conexión a internet.")
+            self._log_message("  - Sugerencia: Comprueba si puedes acceder a GitHub desde tu navegador.")
+        
+        elif "authentication" in error_message.lower() or "autenticación" in error_message.lower():
+            self._log_message("  - Parece ser un problema de autenticación con GitHub.")
+            self._log_message("  - Sugerencia: Verifica tus credenciales de GitHub.")
+            self._log_message("  - Sugerencia: Ejecuta 'gh auth login' en una terminal para reautenticarte.")
+        
+        elif "not found" in error_message.lower() or "no encontrado" in error_message.lower():
+            self._log_message("  - Parece que no se encontró un recurso necesario.")
+            self._log_message("  - Sugerencia: Verifica que la URL del repositorio sea correcta.")
+            self._log_message("  - Sugerencia: Asegúrate de que el repositorio existe en GitHub.")
+        
+        else:
+            self._log_message("  - Error no categorizado.")
+            self._log_message("  - Sugerencia: Revisa la configuración de Git y GitHub CLI.")
+            self._log_message("  - Sugerencia: Intenta ejecutar los comandos manualmente para obtener más detalles.")
+        
+        self._log_message("\n💡 Recomendación general: Si el problema persiste, considera reiniciar la aplicación o tu sistema.")
         
         # Mostrar mensaje de error
         QMessageBox.critical(
             self,
             "Error en el Proceso",
-            f"Se ha producido un error durante el proceso: {error_message}"
+            f"Se ha producido un error durante el proceso: {error_message}\n\nRevisa el registro para ver sugerencias de solución."
         )
     
     def _set_controls_enabled(self, enabled: bool):
