@@ -7,7 +7,7 @@ Módulo que contiene la clase GitRepository para gestionar operaciones con repos
 
 import os
 import subprocess
-from typing import Tuple, List, Optional
+from typing import Tuple, List, Optional, Dict, Any
 
 
 class GitRepository:
@@ -165,11 +165,87 @@ class GitRepository:
         
         return self._run_git_command(['push', '-u', remote_name, branch])
     
+    def diagnose_remote_ref_error(self, remote_name: str = 'origin', branch: str = 'main') -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Diagnostica el error "couldn't find remote ref" y proporciona información sobre posibles causas.
+        
+        Args:
+            remote_name (str): Nombre del remoto a verificar.
+            branch (str): Nombre de la rama a verificar.
+            
+        Returns:
+            Tuple[bool, str, Dict[str, Any]]: Resultado del diagnóstico, mensaje y diccionario con información adicional.
+        """
+        diagnosis = {
+            'possible_causes': [],
+            'recommended_actions': [],
+            'alternative_branch': None,
+            'is_remote_empty': False,
+            'remote_exists': False,
+            'remote_url': None,
+            'available_branches': []
+        }
+        
+        # Verificar si el remoto existe
+        success, remotes_output = self._run_git_command(['remote'])
+        if not success or remote_name not in remotes_output.split():
+            diagnosis['possible_causes'].append('El remoto especificado no existe')
+            diagnosis['recommended_actions'].append(f'Añadir el remoto con: git remote add {remote_name} <url>')
+            return False, f"El remoto '{remote_name}' no existe en este repositorio.", diagnosis
+        
+        diagnosis['remote_exists'] = True
+        
+        # Obtener la URL del remoto
+        success, remote_url_output = self._run_git_command(['remote', 'get-url', remote_name])
+        if success:
+            diagnosis['remote_url'] = remote_url_output.strip().split('\n')[-1]
+        
+        # Verificar si hay conexión con el remoto
+        success, ls_remote_output = self._run_git_command(['ls-remote', remote_name])
+        if not success:
+            diagnosis['possible_causes'].append('Problemas de conexión o autenticación con el repositorio remoto')
+            diagnosis['recommended_actions'].append('Verificar credenciales de Git y conexión a internet')
+            return False, "No se puede conectar al repositorio remoto. Verifica tus credenciales y conexión.", diagnosis
+        
+        # Verificar si el repositorio remoto está vacío
+        if not ls_remote_output or ls_remote_output.strip() == "":
+            diagnosis['is_remote_empty'] = True
+            diagnosis['possible_causes'].append('El repositorio remoto está vacío')
+            diagnosis['recommended_actions'].append(f'Inicializar el repositorio remoto o usar git push -u {remote_name} {branch}')
+            return False, "El repositorio remoto parece estar vacío. No hay ramas para obtener.", diagnosis
+        
+        # Obtener las ramas disponibles en el remoto
+        success, branches_output = self._run_git_command(['ls-remote', '--heads', remote_name])
+        if success:
+            # Extraer nombres de ramas del output (formato: hash refs/heads/nombre_rama)
+            import re
+            branches = re.findall(r'refs/heads/([^\s]+)', branches_output)
+            diagnosis['available_branches'] = branches
+            
+            # Verificar si existe una rama alternativa (main/master)
+            alternative_branch = 'master' if branch == 'main' else 'main'
+            if alternative_branch in branches:
+                diagnosis['alternative_branch'] = alternative_branch
+                diagnosis['possible_causes'].append(f'La rama "{branch}" no existe, pero "{alternative_branch}" sí')
+                diagnosis['recommended_actions'].append(f'Usar git pull {remote_name} {alternative_branch}')
+            
+            # Si la rama solicitada no está en la lista pero hay otras ramas disponibles
+            if branch not in branches and branches:
+                diagnosis['possible_causes'].append(f'La rama "{branch}" no existe en el remoto')
+                branch_suggestions = ', '.join(branches[:3]) + (', ...' if len(branches) > 3 else '')
+                diagnosis['recommended_actions'].append(f'Usar una de las ramas disponibles: {branch_suggestions}')
+        
+        # Si no se encontró ninguna causa específica
+        if not diagnosis['possible_causes']:
+            diagnosis['possible_causes'].append('Causa desconocida')
+            diagnosis['recommended_actions'].append('Verificar la configuración de Git y el estado del repositorio remoto')
+        
+        return True, "Diagnóstico completado.", diagnosis
+    
     def pull(self, remote_name: str = 'origin', branch: str = 'main') -> Tuple[bool, str]:
         """
         Obtiene los cambios del repositorio remoto.
-        Intenta primero con la rama especificada y, si falla con un error de referencia no encontrada,
-        intenta con la rama alternativa (main/master).
+        Implementa un diagnóstico avanzado cuando se encuentra el error "couldn't find remote ref".
         
         Args:
             remote_name (str): Nombre del remoto (por defecto 'origin').
@@ -184,10 +260,42 @@ class GitRepository:
         # Intentar con la rama especificada
         success, message = self._run_git_command(['pull', remote_name, branch])
         
-        # Si falla con un error de referencia no encontrada, intentar con la rama alternativa
+        # Si falla con un error de referencia no encontrada, realizar diagnóstico
         if not success and "couldn't find remote ref" in message:
-            alternative_branch = 'master' if branch == 'main' else 'main'
-            return self._run_git_command(['pull', remote_name, alternative_branch])
+            # Ejecutar diagnóstico para identificar el problema
+            _, diagnosis_msg, diagnosis_info = self.diagnose_remote_ref_error(remote_name, branch)
+            
+            # Intentar estrategias de recuperación automática
+            
+            # 1. Si hay una rama alternativa disponible (main/master), intentar con ella
+            if diagnosis_info['alternative_branch']:
+                alternative_branch = diagnosis_info['alternative_branch']
+                alt_success, alt_message = self._run_git_command(['pull', remote_name, alternative_branch])
+                if alt_success:
+                    return True, f"Se utilizó la rama alternativa '{alternative_branch}' en lugar de '{branch}'."
+            
+            # 2. Si el repositorio remoto está vacío, sugerir hacer push primero
+            if diagnosis_info['is_remote_empty']:
+                return False, "El repositorio remoto está vacío. Considera hacer un push inicial con tus cambios locales."
+            
+            # 3. Si hay otras ramas disponibles, sugerir usar una de ellas
+            if diagnosis_info['available_branches'] and branch not in diagnosis_info['available_branches']:
+                branches_str = ', '.join(diagnosis_info['available_branches'][:3])
+                if len(diagnosis_info['available_branches']) > 3:
+                    branches_str += ', ...'
+                return False, f"La rama '{branch}' no existe en el remoto. Ramas disponibles: {branches_str}"
+            
+            # Si no se pudo recuperar automáticamente, devolver un mensaje detallado con el diagnóstico
+            detailed_message = f"Error: No se pudo encontrar la referencia remota '{branch}'\n\n"
+            detailed_message += "Diagnóstico:\n"
+            for i, cause in enumerate(diagnosis_info['possible_causes'], 1):
+                detailed_message += f"  {i}. {cause}\n"
+            
+            detailed_message += "\nAcciones recomendadas:\n"
+            for i, action in enumerate(diagnosis_info['recommended_actions'], 1):
+                detailed_message += f"  {i}. {action}\n"
+            
+            return False, detailed_message
         
         return success, message
     

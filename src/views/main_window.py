@@ -15,7 +15,7 @@ from PyQt5.QtWidgets import (
     QGroupBox, QTextEdit, QProgressBar, QMessageBox, QApplication,
     QFrame, QSizePolicy, QCheckBox
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QDir
 from PyQt5.QtGui import QFont, QIcon
 
 from src.controllers.git_controller import GitController
@@ -265,22 +265,28 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
         
         # Usar el diálogo nativo del sistema operativo para mejor compatibilidad
-        folder_path = QFileDialog.getExistingDirectory(
-            self,
-            "Seleccionar Carpeta",
-            os.path.expanduser("~"),
-            QFileDialog.ShowDirsOnly | QFileDialog.DontUseNativeDialog
-        )
+        options = QFileDialog.Options()
+        options |= QFileDialog.ShowDirsOnly | QFileDialog.DontUseNativeDialog
         
-        if folder_path:
-            self.folder_path_input.setText(folder_path)
-            success, message = self.git_controller.set_folder_path(folder_path)
-            self._log_message(message)
-            
-            # Actualizar la URL del repositorio siempre que se seleccione una carpeta
-            # independientemente del estado del checkbox
-            self._update_repo_url()
-    
+        dialog = QFileDialog(self)
+        dialog.setOptions(options)
+        dialog.setWindowTitle("Seleccionar Carpeta")
+        dialog.setFileMode(QFileDialog.Directory)
+        
+        # Establecer directorio inicial para Windows (Este Equipo)
+        if os.name == 'nt':
+            dialog.setDirectory("::{20D04FE0-3AEA-1069-A2D8-08002B30309D}")
+        else:
+            dialog.setDirectory(QDir.homePath())
+        
+        if dialog.exec_():
+            folder = dialog.selectedFiles()[0]
+            if folder:
+                self.folder_path_input.setText(folder)
+                success, message = self.git_controller.set_folder_path(folder)
+                self._log_message(message)
+                self._update_repo_url()
+
     def _start_process(self):
         """
         Inicia el proceso de vinculación con GitHub.
