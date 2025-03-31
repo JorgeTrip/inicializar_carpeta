@@ -20,12 +20,20 @@ def get_gh_cli_path() -> Optional[str]:
     """
     # Primero intentamos encontrarlo en el PATH
     try:
+        # Configurar para ocultar la ventana de comandos en Windows
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0  # SW_HIDE
+            
         result = subprocess.run(
             ['where', 'gh'] if os.name == 'nt' else ['which', 'gh'],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            check=True
+            check=True,
+            startupinfo=startupinfo
         )
         path = result.stdout.strip().split('\n')[0]
         if path and os.path.isfile(path):
@@ -74,12 +82,20 @@ def is_gh_authenticated() -> bool:
         return False
         
     try:
+        # Configurar para ocultar la ventana de comandos en Windows
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0  # SW_HIDE
+            
         # Ejecutar el comando 'gh auth status' para verificar si el usuario está autenticado
         result = subprocess.run(
             [gh_path, 'auth', 'status'],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True
+            text=True,
+            startupinfo=startupinfo
         )
         # Si el comando se ejecuta correctamente y no hay errores, el usuario está autenticado
         return result.returncode == 0
@@ -103,13 +119,21 @@ def get_gh_user_info() -> Optional[Dict[str, Any]]:
         return None
         
     try:
+        # Configurar para ocultar la ventana de comandos en Windows
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0  # SW_HIDE
+            
         # Ejecutar el comando 'gh api user' para obtener información del usuario
         result = subprocess.run(
             [gh_path, 'api', 'user'],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            check=True
+            check=True,
+            startupinfo=startupinfo
         )
         
         # Convertir la salida JSON a un diccionario

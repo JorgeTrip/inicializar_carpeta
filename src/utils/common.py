@@ -21,12 +21,20 @@ def is_git_installed() -> bool:
         bool: True si Git está instalado, False en caso contrario.
     """
     try:
+        # Configurar para ocultar la ventana de comandos en Windows
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0  # SW_HIDE
+            
         # Ejecutar el comando 'git --version' para verificar si Git está instalado
         subprocess.run(
             ['git', '--version'],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            check=True
+            check=True,
+            startupinfo=startupinfo
         )
         return True
     except (subprocess.SubprocessError, FileNotFoundError):
@@ -101,13 +109,21 @@ def get_default_branch_name() -> str:
         str: Nombre de la rama predeterminada (por defecto 'main').
     """
     try:
+        # Configurar para ocultar la ventana de comandos en Windows
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0  # SW_HIDE
+            
         # Intentar obtener la rama predeterminada configurada en Git
         result = subprocess.run(
             ['git', 'config', '--get', 'init.defaultBranch'],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            check=True
+            check=True,
+            startupinfo=startupinfo
         )
         branch = result.stdout.strip()
         return branch if branch else 'main'
@@ -124,13 +140,21 @@ def get_git_username() -> str:
         str: Nombre de usuario de Git o cadena vacía si no se encuentra.
     """
     try:
+        # Configurar para ocultar la ventana de comandos en Windows
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0  # SW_HIDE
+            
         # Intentar obtener el nombre de usuario configurado en Git
         result = subprocess.run(
             ['git', 'config', '--get', 'user.name'],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            check=True
+            check=True,
+            startupinfo=startupinfo
         )
         return result.stdout.strip()
     except (subprocess.SubprocessError, FileNotFoundError):

@@ -51,19 +51,37 @@ class GitRepository:
             # Preparar el comando completo con 'git' al inicio
             full_command = ['git'] + command
             
-            # Ejecutar el comando en la carpeta del repositorio
+            # Crear un string con el comando completo para el log
+            cmd_str = ' '.join(full_command)
+            
+            # Ejecutar el comando en la carpeta del repositorio sin mostrar ventana de comandos
+            startupinfo = None
+            if os.name == 'nt':  # Solo en Windows
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = 0  # SW_HIDE
+            
             result = subprocess.run(
                 full_command,
                 cwd=self.local_path,
                 capture_output=True,
                 text=True,
-                check=True
+                check=True,
+                startupinfo=startupinfo
             )
-            return True, result.stdout.strip()
+            
+            # Formatear la salida para incluir el comando ejecutado
+            output = f"Comando: {cmd_str}\n{result.stdout.strip()}"
+            return True, output
         except subprocess.CalledProcessError as e:
-            return False, e.stderr.strip()
+            # Formatear el error para incluir el comando ejecutado
+            cmd_str = ' '.join(['git'] + command)
+            error = f"Error al ejecutar: {cmd_str}\n{e.stderr.strip()}"
+            return False, error
         except Exception as e:
-            return False, str(e)
+            cmd_str = ' '.join(['git'] + command)
+            error = f"Excepción al ejecutar: {cmd_str}\n{str(e)}"
+            return False, error
     
     def init_repository(self) -> Tuple[bool, str]:
         """

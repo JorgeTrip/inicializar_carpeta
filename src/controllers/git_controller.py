@@ -174,6 +174,10 @@ class GitController:
             
             # Ejecutar la función
             try:
+                # Informar del inicio de la operación con más detalle
+                if progress_callback:
+                    progress_callback(progress, f"📋 Iniciando: {step['name']}...")
+                
                 success, message = step['function'](*step['args'], **step['kwargs'])
                 
                 # Guardar el resultado
@@ -183,10 +187,24 @@ class GitController:
                     'message': message
                 })
                 
-                # Informar del resultado
+                # Informar del resultado con formato mejorado
                 if progress_callback:
-                    status = "completado" if success else "fallido"
-                    progress_callback(progress, f"{step['name']} {status}: {message}")
+                    if success:
+                        status = "✅ completado"
+                        # Mostrar detalles del mensaje en líneas separadas para mejor legibilidad
+                        progress_callback(progress, f"{step['name']} {status}")
+                        if message:
+                            for line in message.split('\n'):
+                                if line.strip():
+                                    progress_callback(progress, f"  └─ {line.strip()}")
+                    else:
+                        status = "❌ fallido"
+                        progress_callback(progress, f"{step['name']} {status}: {message}")
+                        # Si hay un mensaje de error detallado, mostrarlo línea por línea
+                        if '\n' in message:
+                            for line in message.split('\n'):
+                                if line.strip():
+                                    progress_callback(progress, f"  ❌ {line.strip()}")
                 
                 # Si hay un error, detener el flujo de trabajo
                 if not success:

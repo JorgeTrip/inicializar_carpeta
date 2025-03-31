@@ -418,14 +418,37 @@ class MainWindow(QMainWindow):
             # Inicializar el repositorio Git local primero
             self._log_message("🔄 Inicializando repositorio Git local...")
             try:
+                # Configurar para ocultar la ventana de comandos en Windows
+                startupinfo = None
+                if os.name == 'nt':
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = 0  # SW_HIDE
+                    
+                # Ejecutar el comando git init y capturar la salida en tiempo real
+                self._log_message("📋 Ejecutando: git init")
                 init_result = subprocess.run(
                     ['git', 'init'],
                     cwd=folder_path,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    text=True
+                    text=True,
+                    startupinfo=startupinfo
                 )
+                
+                # Mostrar la salida del comando en el log
+                if init_result.stdout:
+                    for line in init_result.stdout.strip().split('\n'):
+                        if line.strip():
+                            self._log_message(f"  └─ {line.strip()}")
+                
                 if init_result.returncode != 0:
+                    # Mostrar el error en el log
+                    if init_result.stderr:
+                        for line in init_result.stderr.strip().split('\n'):
+                            if line.strip():
+                                self._log_message(f"  ❌ {line.strip()}")
+                    
                     self._log_message(f"❌ Error al inicializar el repositorio Git: {init_result.stderr}")
                     QMessageBox.critical(
                         self,
@@ -447,15 +470,32 @@ class MainWindow(QMainWindow):
         self._log_message(f"🔄 Creando repositorio '{clean_repo_name}' en GitHub...")
         
         try:
+            # Configurar para ocultar la ventana de comandos en Windows
+            startupinfo = None
+            if os.name == 'nt':
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                startupinfo.wShowWindow = 0  # SW_HIDE
+                
             # Crear el repositorio con GitHub CLI
             # Usamos --private por defecto, pero se podría añadir una opción en la interfaz
+            command = [gh_path, 'repo', 'create', clean_repo_name, '--private', '--source=.']
+            self._log_message(f"📋 Ejecutando: {' '.join(command)}")
+            
             result = subprocess.run(
-                [gh_path, 'repo', 'create', clean_repo_name, '--private', '--source=.'],
+                command,
                 cwd=folder_path,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                text=True,
+                startupinfo=startupinfo
             )
+            
+            # Mostrar la salida del comando en el log
+            if result.stdout:
+                for line in result.stdout.strip().split('\n'):
+                    if line.strip():
+                        self._log_message(f"  └─ {line.strip()}")
             
             # Verificar si el comando se ejecutó correctamente
             if result.returncode == 0:
@@ -492,8 +532,14 @@ class MainWindow(QMainWindow):
                     self._log_message(f"⚠️ No se pudo obtener la URL del repositorio. Salida: {result.stdout}")
                     return ""
             else:
-                # Mostrar el error en el log
-                self._log_message(f"❌ Error al crear el repositorio: {result.stderr}")
+                # Mostrar el error en el log de forma detallada
+                self._log_message(f"❌ Error al crear el repositorio:")
+                
+                # Mostrar cada línea del error en el log
+                if result.stderr:
+                    for line in result.stderr.strip().split('\n'):
+                        if line.strip():
+                            self._log_message(f"  ❌ {line.strip()}")
                 
                 # Mostrar un mensaje de error al usuario
                 QMessageBox.critical(
