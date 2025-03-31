@@ -7,6 +7,7 @@ Implementa una interfaz gráfica que muestra el progreso de las verificaciones i
 """
 
 import sys
+import os
 from typing import List, Dict, Any, Optional, Callable
 
 from PyQt5.QtWidgets import (
@@ -14,8 +15,9 @@ from PyQt5.QtWidgets import (
     QLabel, QProgressBar, QApplication, QCheckBox,
     QFrame, QSizePolicy
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot
-from PyQt5.QtGui import QFont, QIcon
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, pyqtSlot, QSize, QTimer
+from PyQt5.QtGui import QFont, QIcon, QMovie
+from PyQt5.QtSvg import QSvgWidget
 
 
 class CheckItem(QFrame):
@@ -143,7 +145,7 @@ class LoadingWorker(QThread):
 class LoadingScreen(QDialog):
     """
     Pantalla de carga inicial de la aplicación.
-    Muestra un checklist con el progreso de las verificaciones iniciales.
+    Muestra un checklist con el progreso de las verificaciones iniciales y una animación de carga.
     """
     def __init__(self, checks: List[Dict[str, Any]], parent=None):
         """
@@ -157,7 +159,7 @@ class LoadingScreen(QDialog):
         
         # Configurar la ventana
         self.setWindowTitle("Inicializando aplicación")
-        self.setMinimumSize(500, 300)
+        self.setMinimumSize(550, 400)  # Aumentar dimensiones para mejor visualización de todos los elementos
         # Configurar banderas para que la ventana permanezca siempre visible
         self.setWindowFlags((self.windowFlags() & ~Qt.WindowContextHelpButtonHint) | Qt.WindowStaysOnTopHint)
         
@@ -165,12 +167,19 @@ class LoadingScreen(QDialog):
         self.checks = checks
         self.check_items = {}
         self.results = {}
+        self.animation_active = True  # Control para la animación
         
         # Inicializar la interfaz
         self._init_ui()
         
-        # Iniciar las verificaciones
-        self._start_checks()
+        # Mostrar mensaje de inicialización inmediato
+        self._show_initializing_message("Iniciando verificaciones...")
+        
+        # Procesar eventos para asegurar que la interfaz se actualice inmediatamente
+        QApplication.processEvents()
+        
+        # Iniciar las verificaciones después de un breve retraso para asegurar que la UI esté visible
+        QTimer.singleShot(100, self._start_checks)
     
     def _init_ui(self):
         """
@@ -197,6 +206,56 @@ class LoadingScreen(QDialog):
         description_label.setWordWrap(True)
         description_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(description_label)
+        
+        # Contenedor para la animación de carga
+        animation_container = QHBoxLayout()
+        animation_container.setAlignment(Qt.AlignCenter)
+        animation_container.setSpacing(30)  # Aumentar el espaciado entre elementos para evitar superposiciones
+        
+        # Crear un widget personalizado para el spinner que utilice la animación nativa del SVG
+        from PyQt5.QtWidgets import QWidget
+        
+        class SpinnerWidget(QWidget):
+            def __init__(self, parent=None):
+                super().__init__(parent)
+                self.setFixedSize(QSize(60, 60))  # Aumentar tamaño para mejor visibilidad
+                
+                # Obtener la ruta al archivo SVG
+                svg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 
+                                        "src", "views", "resources", "loading_spinner.svg")
+                
+                # Crear el widget SVG
+                self.svg_widget = QSvgWidget(svg_path)
+                self.svg_widget.setFixedSize(QSize(50, 50))  # Aumentar tamaño del SVG
+                
+                # Crear layout para centrar el SVG
+                layout = QHBoxLayout(self)
+                layout.setContentsMargins(0, 0, 0, 0)
+                layout.setAlignment(Qt.AlignCenter)
+                layout.addWidget(self.svg_widget)
+                self.setLayout(layout)  # Establecer el layout en el widget
+                
+                # El SVG ya tiene animación incorporada, no necesitamos rotarlo manualmente
+                # Solo aplicamos estilos para asegurar que sea visible
+                self.svg_widget.setStyleSheet("background: transparent;")
+        
+        # Crear el widget spinner personalizado
+        self.spinner_widget = SpinnerWidget(self)
+        
+        # Añadir el spinner al layout con un margen adicional
+        animation_container.addWidget(self.spinner_widget)
+        
+        # Mensaje de estado actual
+        self.status_label = QLabel("Preparando verificaciones...")
+        self.status_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)  # Alinear a la izquierda y centrado verticalmente
+        self.status_label.setStyleSheet("font-weight: bold; color: #4285f4; font-size: 11pt;")
+        self.status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)  # Permitir que se expanda horizontalmente
+        self.status_label.setWordWrap(True)  # Permitir que el texto se envuelva si es necesario
+        self.status_label.setMinimumWidth(350)  # Aumentar el ancho mínimo para evitar cortes
+        self.status_label.setContentsMargins(10, 0, 0, 0)  # Añadir margen izquierdo para separar del spinner
+        animation_container.addWidget(self.status_label)
+        
+        layout.addLayout(animation_container)
         
         # Separador
         separator = QFrame()
@@ -228,11 +287,40 @@ class LoadingScreen(QDialog):
         self.continue_button.setMinimumHeight(40)
         self.continue_button.clicked.connect(self.accept)
         layout.addWidget(self.continue_button)
+        
+        # Iniciar la animación de rotación del spinner
+        self._start_spinner_animation()
+    
+    def _show_initializing_message(self, message: str):
+        """
+        Muestra un mensaje de inicialización en la etiqueta de estado.
+        
+        Args:
+            message (str): Mensaje a mostrar.
+        """
+        if hasattr(self, 'status_label'):
+            self.status_label.setText(message)
+            QApplication.processEvents()
+    
+    def _start_spinner_animation(self):
+        """
+        Inicia la animación del spinner.
+        Este método se mantiene por compatibilidad, pero la animación
+        ahora se maneja dentro del widget personalizado SpinnerWidget.
+        """
+        # La animación ya se inicia automáticamente al crear el SpinnerWidget
+        pass
+    
+    # Ya no necesitamos el método _rotate_spinner ni las propiedades de rotación
+    # ya que la animación se maneja dentro del widget personalizado
     
     def _start_checks(self):
         """
         Inicia las verificaciones en segundo plano.
         """
+        # Actualizar mensaje
+        self._show_initializing_message("Ejecutando verificaciones...")
+        
         # Crear el worker
         self.worker = LoadingWorker(self.checks)
         
@@ -255,6 +343,17 @@ class LoadingScreen(QDialog):
         # Actualizar el elemento del checklist
         if check_id in self.check_items:
             self.check_items[check_id].set_checked(True, success)
+            
+            # Actualizar el mensaje de estado con la verificación actual
+            for check in self.checks:
+                if check['id'] == check_id:
+                    status_text = f"Verificando: {check['description']}"
+                    if success:
+                        status_text = f"Completado: {check['description']} ✓"
+                    else:
+                        status_text = f"Fallido: {check['description']} ✗"
+                    self._show_initializing_message(status_text)
+                    break
             
             # Asegurar que la ventana permanezca visible y con foco
             self.activateWindow()
@@ -282,6 +381,15 @@ class LoadingScreen(QDialog):
         
         # Actualizar la barra de progreso
         self.progress_bar.setValue(100)
+        
+        # Actualizar el mensaje de estado
+        if all_success:
+            self._show_initializing_message("Verificaciones completadas correctamente ✓")
+        else:
+            self._show_initializing_message("Algunas verificaciones han fallado ✗")
+        
+        # Detener la animación si ya no es necesaria
+        self.animation_active = False
         
         # Habilitar el botón de continuar si todas las verificaciones fueron exitosas
         self.continue_button.setEnabled(all_success)

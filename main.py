@@ -223,8 +223,15 @@ def main():
         }
     ]
     
-    # Mostrar la pantalla de carga
+    # Mostrar la pantalla de carga inmediatamente
     loading_screen = LoadingScreen(checks)
+    # Mostrar la ventana sin bloquear para que aparezca inmediatamente
+    loading_screen.show()
+    loading_screen.activateWindow()
+    loading_screen.raise_()
+    # Procesar eventos para asegurar que la interfaz se actualice inmediatamente
+    QApplication.processEvents()
+    # Ejecutar el diálogo de forma modal
     result = loading_screen.exec_()
     
     # Si el usuario cancela o alguna verificación falla, salir
