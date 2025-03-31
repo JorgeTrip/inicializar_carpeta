@@ -281,12 +281,8 @@ class LoadingScreen(QDialog):
         self.progress_bar.setValue(0)
         layout.addWidget(self.progress_bar)
         
-        # Botón de continuar (inicialmente deshabilitado)
-        self.continue_button = QPushButton("Continuar")
-        self.continue_button.setEnabled(False)
-        self.continue_button.setMinimumHeight(40)
-        self.continue_button.clicked.connect(self.accept)
-        layout.addWidget(self.continue_button)
+        # Ya no necesitamos el botón de continuar, la ventana se cerrará automáticamente
+        # cuando se completen las verificaciones exitosamente
         
         # Iniciar la animación de rotación del spinner
         self._start_spinner_animation()
@@ -385,20 +381,19 @@ class LoadingScreen(QDialog):
         # Actualizar el mensaje de estado
         if all_success:
             self._show_initializing_message("Verificaciones completadas correctamente ✓")
+            # Si todas las verificaciones fueron exitosas, cerrar automáticamente la ventana después de un breve retraso
+            QTimer.singleShot(1000, self.accept)
         else:
             self._show_initializing_message("Algunas verificaciones han fallado ✗")
         
         # Detener la animación si ya no es necesaria
         self.animation_active = False
         
-        # Habilitar el botón de continuar si todas las verificaciones fueron exitosas
-        self.continue_button.setEnabled(all_success)
-        
-        # Asegurar que la ventana permanezca visible y con foco
+        # Asegurar que la ventana permanezca visible y con foco mientras esté abierta
         self.activateWindow()
         self.raise_()
         
-        # Si alguna verificación falló, mostrar mensaje
+        # Si alguna verificación falló, mostrar mensaje y agregar un botón para salir
         if not all_success:
             # Buscar la primera verificación crítica que falló
             failed_check = None
@@ -407,9 +402,12 @@ class LoadingScreen(QDialog):
                     failed_check = check
                     break
             
-            # Actualizar el botón de continuar
-            self.continue_button.setText("Salir")
-            self.continue_button.setStyleSheet("background-color: #FF5252; color: white;")
+            # Crear un botón de salir ya que eliminamos el botón continuar
+            exit_button = QPushButton("Salir")
+            exit_button.setMinimumHeight(40)
+            exit_button.setStyleSheet("background-color: #FF5252; color: white;")
+            exit_button.clicked.connect(self.reject)  # Usar reject para indicar que hubo un error
+            self.layout().addWidget(exit_button)
             
             # Mostrar mensaje de error
             if failed_check and 'error_message' in failed_check:
