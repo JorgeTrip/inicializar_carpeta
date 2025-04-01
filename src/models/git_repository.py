@@ -134,6 +134,124 @@ class GitRepository:
         
         return self._run_git_command(['add', '.'])
     
+    def check_git_config(self) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Verifica si la configuración de usuario de Git está establecida.
+        
+        Returns:
+            Tuple[bool, str, Dict[str, Any]]: Resultado de la verificación, mensaje y diccionario con información adicional.
+        """
+        config_info = {
+            'user.name': None,
+            'user.email': None,
+            'is_configured': False
+        }
+        
+        # Verificar user.name
+        success, output = self._run_git_command(['config', '--get', 'user.name'])
+        if success and output.strip() != "":
+            config_info['user.name'] = output.replace("Comando: git config --get user.name\n", "").strip()
+        
+        # Verificar user.email
+        success, output = self._run_git_command(['config', '--get', 'user.email'])
+        if success and output.strip() != "":
+            config_info['user.email'] = output.replace("Comando: git config --get user.email\n", "").strip()
+        
+        # Determinar si está configurado
+        config_info['is_configured'] = config_info['user.name'] is not None and config_info['user.email'] is not None
+        
+        if config_info['is_configured']:
+            return True, f"Configuración de Git: Usuario '{config_info['user.name']}' <{config_info['user.email']}>", config_info
+        else:
+            missing = []
+            if config_info['user.name'] is None:
+                missing.append("user.name")
+            if config_info['user.email'] is None:
+                missing.append("user.email")
+            
+            return False, f"Configuración de Git incompleta. Falta: {', '.join(missing)}", config_info
+    
+    def has_staged_changes(self) -> Tuple[bool, str, bool]:
+        """
+        Verifica si hay cambios en el área de preparación (staging) listos para commit.
+        
+        Returns:
+            Tuple[bool, str, bool]: Resultado de la operación, mensaje y booleano que indica si hay cambios.
+        """
+        if not self.is_git_repo:
+            return False, "La carpeta no es un repositorio Git. Inicialízalo primero.", False
+        
+        # Ejecutar git diff --cached para ver si hay cambios en staging
+        success, output = self._run_git_command(['diff', '--cached', '--quiet'])
+        
+        # Si el comando falla, significa que hay cambios en staging
+        has_changes = not success
+        
+        if has_changes:
+            return True, "Hay cambios en el área de preparación listos para commit.", True
+        else:
+            return True, "No hay cambios en el área de preparación para hacer commit.", False
+    
+    def has_unstaged_changes(self) -> Tuple[bool, str, bool]:
+        """
+        Verifica si hay cambios sin preparar (unstaged) en el repositorio.
+        
+        Returns:
+            Tuple[bool, str, bool]: Resultado de la operación, mensaje y booleano que indica si hay cambios.
+        """
+        if not self.is_git_repo:
+            return False, "La carpeta no es un repositorio Git. Inicialízalo primero.", False
+        
+        # Ejecutar git diff para ver si hay cambios sin preparar
+        success, output = self._run_git_command(['diff', '--quiet'])
+        
+        # Si el comando falla, significa que hay cambios sin preparar
+        has_changes = not success
+        
+        if has_changes:
+            return True, "Hay cambios sin preparar en el repositorio.", True
+        else:
+            return True, "No hay cambios sin preparar en el repositorio.", False
+    
+    def has_any_changes(self) -> Tuple[bool, str, bool]:
+        """
+        Verifica si hay cualquier tipo de cambio en el repositorio (staged o unstaged).
+        
+        Returns:
+            Tuple[bool, str, bool]: Resultado de la operación, mensaje y booleano que indica si hay cambios.
+        """
+        if not self.is_git_repo:
+            return False, "La carpeta no es un repositorio Git. Inicialízalo primero.", False
+        
+        # Verificar cambios preparados
+        staged_success, staged_msg, has_staged = self.has_staged_changes()
+        if not staged_success:
+            return False, staged_msg, False
+        
+        # Verificar cambios sin preparar
+        unstaged_success, unstaged_msg, has_unstaged = self.has_unstaged_changes()
+        if not unstaged_success:
+            return False, unstaged_msg, False
+        
+        # Verificar si hay archivos sin seguimiento
+        success, output = self._run_git_command(['ls-files', '--others', '--exclude-standard', '--error-unmatch', '*'])
+        has_untracked = success
+        
+        # Determinar si hay algún tipo de cambio
+        has_any_changes = has_staged or has_unstaged or has_untracked
+        
+        if has_any_changes:
+            message = "Hay cambios en el repositorio."
+            if has_staged:
+                message += " Hay cambios preparados."
+            if has_unstaged:
+                message += " Hay cambios sin preparar."
+            if has_untracked:
+                message += " Hay archivos sin seguimiento."
+            return True, message, True
+        else:
+            return True, "No hay cambios en el repositorio.", False
+    
     def commit(self, message: str) -> Tuple[bool, str]:
         """
         Realiza un commit con los cambios en el área de preparación.
@@ -147,15 +265,35 @@ class GitRepository:
         if not self.is_git_repo:
             return False, "La carpeta no es un repositorio Git. Inicialízalo primero."
         
+        # Verificar si hay cambios para hacer commit
+        success, status_msg, has_changes = self.has_staged_changes()
+        if not success:
+            return False, status_msg
+        
+        if not has_changes:
+            # Si no hay cambios preparados, verificar si hay otros cambios sin preparar
+            any_success, any_msg, has_any = self.has_any_changes()
+            if any_success and has_any:
+                return False, "No hay cambios preparados para hacer commit, pero hay cambios sin preparar. Usa 'git add .' para preparar todos los cambios."
+            else:
+                return False, "No hay cambios para hacer commit. El repositorio está sincronizado con el remoto."
+        
+        # Verificar si la configuración de usuario está establecida
+        config_success, config_msg, config_info = self.check_git_config()
+        if not config_success:
+            return False, f"No se puede hacer commit: {config_msg}. Configura tu usuario de Git con 'git config --global user.name \"Tu Nombre\"' y 'git config --global user.email \"tu@email.com\"'."
+        
+        # Realizar el commit
         return self._run_git_command(['commit', '-m', message])
     
-    def push(self, remote_name: str = 'origin', branch: str = 'main') -> Tuple[bool, str]:
+    def push(self, remote_name: str = 'origin', branch: str = 'main', force: bool = False) -> Tuple[bool, str]:
         """
         Envía los cambios al repositorio remoto.
         
         Args:
             remote_name (str): Nombre del remoto (por defecto 'origin').
             branch (str): Nombre de la rama (por defecto 'main').
+            force (bool): Si es True, fuerza el push incluso si causa pérdida de commits remotos.
             
         Returns:
             Tuple[bool, str]: Resultado de la operación y mensaje.
@@ -163,7 +301,12 @@ class GitRepository:
         if not self.is_git_repo:
             return False, "La carpeta no es un repositorio Git. Inicialízalo primero."
         
-        return self._run_git_command(['push', '-u', remote_name, branch])
+        command = ['push', '-u']
+        if force:
+            command.append('--force')
+        command.extend([remote_name, branch])
+        
+        return self._run_git_command(command)
     
     def diagnose_remote_ref_error(self, remote_name: str = 'origin', branch: str = 'main') -> Tuple[bool, str, Dict[str, Any]]:
         """
@@ -198,106 +341,121 @@ class GitRepository:
         # Obtener la URL del remoto
         success, remote_url_output = self._run_git_command(['remote', 'get-url', remote_name])
         if success:
-            diagnosis['remote_url'] = remote_url_output.strip().split('\n')[-1]
+            remote_url = remote_url_output.strip().split('\n')[-1]
+            diagnosis['remote_url'] = remote_url
         
-        # Verificar si hay conexión con el remoto
-        success, ls_remote_output = self._run_git_command(['ls-remote', remote_name])
+        # Intentar listar las ramas remotas
+        success, ls_remote_output = self._run_git_command(['ls-remote', '--heads', remote_name])
+        
         if not success:
-            diagnosis['possible_causes'].append('Problemas de conexión o autenticación con el repositorio remoto')
-            diagnosis['recommended_actions'].append('Verificar credenciales de Git y conexión a internet')
-            return False, "No se puede conectar al repositorio remoto. Verifica tus credenciales y conexión.", diagnosis
+            # Si falla, podría ser porque el repositorio remoto no existe o no es accesible
+            diagnosis['possible_causes'].append('El repositorio remoto no existe o no es accesible')
+            diagnosis['possible_causes'].append('Problemas de conectividad o autenticación')
+            diagnosis['recommended_actions'].append('Verificar que el repositorio remoto existe y es accesible')
+            diagnosis['recommended_actions'].append('Verificar credenciales de autenticación')
+            return False, f"No se puede acceder al remoto '{remote_name}'. Verifica que existe y tienes acceso.", diagnosis
         
-        # Verificar si el repositorio remoto está vacío
-        if not ls_remote_output or ls_remote_output.strip() == "":
+        # Si ls-remote no devuelve nada, el repositorio remoto está vacío
+        if not ls_remote_output or ls_remote_output.strip() == f"Comando: git ls-remote --heads {remote_name}":
             diagnosis['is_remote_empty'] = True
             diagnosis['possible_causes'].append('El repositorio remoto está vacío')
-            diagnosis['recommended_actions'].append(f'Inicializar el repositorio remoto o usar git push -u {remote_name} {branch}')
-            return False, "El repositorio remoto parece estar vacío. No hay ramas para obtener.", diagnosis
+            diagnosis['recommended_actions'].append(f'Hacer push con: git push -u {remote_name} {branch}')
+            return True, f"El repositorio remoto '{remote_name}' está vacío. No hay ramas disponibles.", diagnosis
         
-        # Obtener las ramas disponibles en el remoto
-        success, branches_output = self._run_git_command(['ls-remote', '--heads', remote_name])
-        if success:
-            # Extraer nombres de ramas del output (formato: hash refs/heads/nombre_rama)
-            import re
-            branches = re.findall(r'refs/heads/([^\s]+)', branches_output)
-            diagnosis['available_branches'] = branches
+        # Extraer las ramas disponibles del output de ls-remote
+        available_branches = []
+        for line in ls_remote_output.split('\n'):
+            if line.startswith('Comando:'):
+                continue
+            if 'refs/heads/' in line:
+                branch_name = line.split('refs/heads/')[-1].strip()
+                available_branches.append(branch_name)
+        
+        diagnosis['available_branches'] = available_branches
+        
+        # Si la rama especificada no está en las ramas disponibles
+        if branch not in available_branches:
+            diagnosis['possible_causes'].append(f"La rama '{branch}' no existe en el repositorio remoto")
             
-            # Verificar si existe una rama alternativa (main/master)
-            alternative_branch = 'master' if branch == 'main' else 'main'
-            if alternative_branch in branches:
-                diagnosis['alternative_branch'] = alternative_branch
-                diagnosis['possible_causes'].append(f'La rama "{branch}" no existe, pero "{alternative_branch}" sí')
-                diagnosis['recommended_actions'].append(f'Usar git pull {remote_name} {alternative_branch}')
-            
-            # Si la rama solicitada no está en la lista pero hay otras ramas disponibles
-            if branch not in branches and branches:
-                diagnosis['possible_causes'].append(f'La rama "{branch}" no existe en el remoto')
-                branch_suggestions = ', '.join(branches[:3]) + (', ...' if len(branches) > 3 else '')
-                diagnosis['recommended_actions'].append(f'Usar una de las ramas disponibles: {branch_suggestions}')
+            # Sugerir una rama alternativa si hay alguna disponible
+            if available_branches:
+                # Buscar 'main' o 'master' primero, luego cualquier otra
+                if 'main' in available_branches:
+                    diagnosis['alternative_branch'] = 'main'
+                elif 'master' in available_branches:
+                    diagnosis['alternative_branch'] = 'master'
+                else:
+                    diagnosis['alternative_branch'] = available_branches[0]
+                
+                diagnosis['recommended_actions'].append(f"Usar la rama '{diagnosis['alternative_branch']}' en lugar de '{branch}'")
+                return False, f"La rama '{branch}' no existe en el remoto. Ramas disponibles: {', '.join(available_branches)}", diagnosis
+            else:
+                diagnosis['recommended_actions'].append('Crear la rama en el repositorio remoto')
+                return False, f"No se encontraron ramas en el repositorio remoto '{remote_name}'.", diagnosis
         
-        # Si no se encontró ninguna causa específica
-        if not diagnosis['possible_causes']:
-            diagnosis['possible_causes'].append('Causa desconocida')
-            diagnosis['recommended_actions'].append('Verificar la configuración de Git y el estado del repositorio remoto')
-        
-        return True, "Diagnóstico completado.", diagnosis
+        # Si llegamos aquí, la rama existe pero hay otro problema
+        diagnosis['possible_causes'].append('Problema desconocido con la referencia remota')
+        diagnosis['recommended_actions'].append('Verificar la configuración de Git y el estado del repositorio remoto')
+        return False, f"La rama '{branch}' existe en el remoto, pero hay un problema al acceder a ella.", diagnosis
     
-    def pull(self, remote_name: str = 'origin', branch: str = 'main') -> Tuple[bool, str]:
+    def check_remote_content(self, remote_name: str = 'origin') -> Tuple[bool, str, Dict[str, Any]]:
         """
-        Obtiene los cambios del repositorio remoto.
-        Implementa un diagnóstico avanzado cuando se encuentra el error "couldn't find remote ref".
+        Verifica si el repositorio remoto tiene contenido y obtiene información sobre las ramas disponibles.
         
         Args:
-            remote_name (str): Nombre del remoto (por defecto 'origin').
-            branch (str): Nombre de la rama (por defecto 'main').
+            remote_name (str): Nombre del remoto a verificar.
             
         Returns:
-            Tuple[bool, str]: Resultado de la operación y mensaje.
+            Tuple[bool, str, Dict[str, Any]]: Resultado de la verificación, mensaje y diccionario con información adicional.
         """
-        if not self.is_git_repo:
-            return False, "La carpeta no es un repositorio Git. Inicialízalo primero."
+        result_info = {
+            'has_content': False,
+            'available_branches': [],
+            'default_branch': None
+        }
         
-        # Intentar con la rama especificada
-        success, message = self._run_git_command(['pull', remote_name, branch])
+        # Verificar si el remoto existe
+        success, remotes_output = self._run_git_command(['remote'])
+        if not success or remote_name not in remotes_output.split():
+            return False, f"El remoto '{remote_name}' no existe en este repositorio.", result_info
         
-        # Si falla con un error de referencia no encontrada, realizar diagnóstico
-        if not success and "couldn't find remote ref" in message:
-            # Ejecutar diagnóstico para identificar el problema
-            _, diagnosis_msg, diagnosis_info = self.diagnose_remote_ref_error(remote_name, branch)
-            
-            # Intentar estrategias de recuperación automática
-            
-            # 1. Si hay una rama alternativa disponible (main/master), intentar con ella
-            if diagnosis_info['alternative_branch']:
-                alternative_branch = diagnosis_info['alternative_branch']
-                alt_success, alt_message = self._run_git_command(['pull', remote_name, alternative_branch])
-                if alt_success:
-                    return True, f"Se utilizó la rama alternativa '{alternative_branch}' en lugar de '{branch}'."
-            
-            # 2. Si el repositorio remoto está vacío, sugerir hacer push primero
-            if diagnosis_info['is_remote_empty']:
-                return False, "El repositorio remoto está vacío. Considera hacer un push inicial con tus cambios locales."
-            
-            # 3. Si hay otras ramas disponibles, sugerir usar una de ellas
-            if diagnosis_info['available_branches'] and branch not in diagnosis_info['available_branches']:
-                branches_str = ', '.join(diagnosis_info['available_branches'][:3])
-                if len(diagnosis_info['available_branches']) > 3:
-                    branches_str += ', ...'
-                return False, f"La rama '{branch}' no existe en el remoto. Ramas disponibles: {branches_str}"
-            
-            # Si no se pudo recuperar automáticamente, devolver un mensaje detallado con el diagnóstico
-            detailed_message = f"Error: No se pudo encontrar la referencia remota '{branch}'\n\n"
-            detailed_message += "Diagnóstico:\n"
-            for i, cause in enumerate(diagnosis_info['possible_causes'], 1):
-                detailed_message += f"  {i}. {cause}\n"
-            
-            detailed_message += "\nAcciones recomendadas:\n"
-            for i, action in enumerate(diagnosis_info['recommended_actions'], 1):
-                detailed_message += f"  {i}. {action}\n"
-            
-            return False, detailed_message
+        # Intentar listar las ramas remotas
+        success, ls_remote_output = self._run_git_command(['ls-remote', '--heads', remote_name])
         
-        return success, message
+        if not success:
+            # Si falla, podría ser porque el repositorio remoto no existe o no es accesible
+            return False, f"No se puede acceder al remoto '{remote_name}'. Verifica que existe y tienes acceso.", result_info
+        
+        # Si ls-remote no devuelve nada o solo devuelve el comando, el repositorio remoto está vacío
+        if not ls_remote_output or ls_remote_output.strip() == f"Comando: git ls-remote --heads {remote_name}":
+            return True, f"El repositorio remoto '{remote_name}' está vacío.", result_info
+        
+        # Extraer las ramas disponibles del output de ls-remote
+        available_branches = []
+        for line in ls_remote_output.split('\n'):
+            if line.startswith('Comando:'):
+                continue
+            if 'refs/heads/' in line:
+                branch_name = line.split('refs/heads/')[-1].strip()
+                available_branches.append(branch_name)
+        
+        if available_branches:
+            result_info['has_content'] = True
+            result_info['available_branches'] = available_branches
+            
+            # Determinar la rama predeterminada (main o master)
+            if 'main' in available_branches:
+                result_info['default_branch'] = 'main'
+            elif 'master' in available_branches:
+                result_info['default_branch'] = 'master'
+            else:
+                result_info['default_branch'] = available_branches[0]
+            
+            return True, f"El repositorio remoto tiene contenido. Ramas disponibles: {', '.join(available_branches)}", result_info
+        
+        # Si llegamos aquí, el repositorio tiene algún contenido pero no pudimos determinar las ramas
+        result_info['has_content'] = True
+        return True, "El repositorio remoto tiene contenido, pero no se pudieron determinar las ramas.", result_info
     
     def get_status(self) -> Tuple[bool, str]:
         """
@@ -316,7 +474,7 @@ class GitRepository:
         Crea un archivo .gitignore basado en una plantilla.
         
         Args:
-            template (str): Nombre de la plantilla (por defecto 'Python').
+            template (str): Nombre de la plantilla a utilizar (por defecto 'Python').
             
         Returns:
             Tuple[bool, str]: Resultado de la operación y mensaje.
@@ -326,74 +484,168 @@ class GitRepository:
         
         gitignore_path = os.path.join(self.local_path, '.gitignore')
         
-        # Plantillas básicas de .gitignore
-        templates = {
-            'Python': """# Byte-compiled / optimized / DLL files
+        # Verificar si ya existe un archivo .gitignore
+        if os.path.exists(gitignore_path):
+            return True, "El archivo .gitignore ya existe."
+        
+        # Crear un archivo .gitignore básico para Python
+        if template.lower() == 'python':
+            gitignore_content = """
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
 
+# C extensions
+*.so
+
 # Distribution / packaging
-dist/
+.Python
 build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
 *.egg-info/
+.installed.cfg
+*.egg
 
-# Virtual environments
-venv/
-env/
-.env/
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
 
-# IDE files
-.idea/
-.vscode/
-*.swp
-*.swo
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Logs
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
 *.log
+local_settings.py
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# celery beat schedule file
+celerybeat-schedule
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
 
 # Local configuration
-.env
-""",
-            'Node': """# Dependencies
-node_modules/
-npm-debug.log
-yarn-error.log
-yarn-debug.log
-
-# Build
-dist/
-build/
-
-# Environment variables
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
-# IDE
 .idea/
 .vscode/
 *.swp
 *.swo
 
-# Logs
-logs/
-*.log
-
-# OS
+# OS generated files
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 """
-        }
-        
-        if template not in templates:
-            return False, f"Plantilla '{template}' no disponible. Opciones: {', '.join(templates.keys())}"
+        else:
+            # Si no se reconoce la plantilla, crear un .gitignore básico
+            gitignore_content = """
+# Archivos generados por el sistema operativo
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Archivos de configuración del IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+"""
         
         try:
             with open(gitignore_path, 'w', encoding='utf-8') as f:
-                f.write(templates[template])
+                f.write(gitignore_content)
             return True, f"Archivo .gitignore creado con plantilla '{template}'."
         except Exception as e:
-            return False, f"Error al crear .gitignore: {str(e)}"
+            return False, f"Error al crear el archivo .gitignore: {str(e)}"
+    
+    def pull(self, remote_name: str = 'origin', branch: str = 'main') -> Tuple[bool, str]:
+        """
+        Obtiene los cambios del repositorio remoto.
+        
+        Args:
+            remote_name (str): Nombre del remoto (por defecto 'origin').
+            branch (str): Nombre de la rama (por defecto 'main').
+            
+        Returns:
+            Tuple[bool, str]: Resultado de la operación y mensaje.
+        """
+        if not self.is_git_repo:
+            return False, "La carpeta no es un repositorio Git. Inicialízalo primero."
+        
+        return self._run_git_command(['pull', remote_name, branch])

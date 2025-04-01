@@ -355,7 +355,76 @@ class MainWindow(QMainWindow):
             
             # Mostrar instrucciones para vincular con un repositorio existente
             self._show_existing_repo_instructions()
-            workflow = self.git_controller.get_existing_repository_workflow(repo_url)
+            
+            # Verificar si el repositorio remoto tiene contenido antes de continuar
+            # Primero inicializamos el repositorio y configuramos el remoto para poder verificar
+            self._log_message("🔍 Verificando el contenido del repositorio remoto...")
+            
+            # Inicializar el repositorio Git si no está inicializado
+            if not os.path.exists(os.path.join(folder_path, '.git')):
+                self._log_message("🔄 Inicializando repositorio Git local...")
+                success, message = self.git_controller.repository.init_repository()
+                if not success:
+                    self._log_message(f"❌ Error al inicializar el repositorio Git: {message}")
+                    QMessageBox.critical(
+                        self,
+                        "Error al inicializar el repositorio",
+                        f"No se pudo inicializar el repositorio Git. Error: {message}"
+                    )
+                    return
+                self._log_message("✅ Repositorio Git local inicializado correctamente.")
+            
+            # Configurar el remoto
+            self._log_message(f"🔄 Configurando remoto 'origin' con URL: {repo_url}")
+            success, message = self.git_controller.repository.add_remote(repo_url)
+            if not success:
+                self._log_message(f"❌ Error al configurar el remoto: {message}")
+                QMessageBox.critical(
+                    self,
+                    "Error al configurar el remoto",
+                    f"No se pudo configurar el remoto. Error: {message}"
+                )
+                return
+            self._log_message("✅ Remoto configurado correctamente.")
+            
+            # Verificar el contenido del repositorio remoto
+            success, message, remote_info = self.git_controller.repository.check_remote_content()
+            
+            # Variable para controlar si debemos sobrescribir el contenido remoto
+            overwrite_remote = False
+            
+            if success and remote_info['has_content']:
+                # El repositorio remoto tiene contenido, preguntar al usuario qué hacer
+                branches_str = ", ".join(remote_info['available_branches'][:3])
+                if len(remote_info['available_branches']) > 3:
+                    branches_str += ", ..."
+                
+                self._log_message(f"⚠️ El repositorio remoto tiene contenido. Ramas disponibles: {branches_str}")
+                
+                reply = QMessageBox.question(
+                    self,
+                    "Repositorio Remoto con Contenido",
+                    f"El repositorio remoto ya tiene contenido. Ramas disponibles: {branches_str}\n\n"
+                    "¿Deseas sobrescribir el contenido remoto con el contenido local?\n\n"
+                    "- Si eliges 'Sí', se sobrescribirá el contenido remoto con el local.\n"
+                    "- Si eliges 'No', se obtendrán los cambios del remoto y se mezclarán con el local.",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                
+                overwrite_remote = (reply == QMessageBox.Yes)
+                
+                if overwrite_remote:
+                    self._log_message("⚠️ Se sobrescribirá el contenido remoto con el local.")
+                else:
+                    self._log_message("ℹ️ Se obtendrán los cambios del remoto y se mezclarán con el local.")
+            elif success and remote_info['is_empty']:
+                self._log_message("ℹ️ El repositorio remoto está vacío.")
+                # Si el repositorio está vacío, podemos tratarlo como un nuevo repositorio
+                overwrite_remote = True
+            
+            # Obtener el flujo de trabajo adecuado según la decisión del usuario
+            workflow = self.git_controller.get_existing_repository_workflow(repo_url, overwrite_remote)
         
         # Determinar si debemos mostrar confirmación o proceder directamente
         # Si estamos creando un nuevo repositorio y ya se ha creado exitosamente, no necesitamos confirmación
